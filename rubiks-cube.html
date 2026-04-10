@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rubik's Cube Photo Display</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+  }
+
+  h1 { font-size: 18px; font-weight: 500; letter-spacing: 0.04em; opacity: 0.85; }
+
+  #hint {
+    font-size: 12px;
+    opacity: 0.55;
+    text-align: center;
+    line-height: 1.7;
+  }
+
+  #scene {
+    width: 320px;
+    height: 320px;
+    perspective: 900px;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  #cube {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    transform-style: preserve-3d;
+    transform: rotateX(-30deg) rotateY(30deg);
+  }
+
+  /* Each face layer wrapper — used for twist animation */
+  .layer-group {
+    position: absolute;
+    width: 160px;
+    height: 160px;
+    left: 80px;
+    top: 80px;
+    transform-style: preserve-3d;
+    pointer-events: none;
+  }
+
+  .face {
+    position: absolute;
+    width: 160px;
+    height: 160px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    padding: 4px;
+    background: #111;
+    border: 4px solid #111;
+    pointer-events: all;
+  }
+
+  .cell {
+    border-radius: 3px;
+    transition: background 0.05s;
+  }
+
+  #btn-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  button {
+    font-size: 13px;
+    padding: 6px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.08);
+    color: #eee;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: rgba(255,255,255,0.16); }
+
+  #face-btns {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 400px;
+  }
+
+  .face-btn {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+  }
+
+  #status {
+    font-size: 12px;
+    opacity: 0.5;
+    height: 16px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Rubik's Cube Photo Display</h1>
+<div id="hint">
+  Drag on a face to twist that layer &nbsp;·&nbsp; Drag outside the cube to orbit<br>
+  Click a face button below to upload a photo
+</div>
+
+<div id="scene"><div id="cube"></div></div>
+
+<div id="btn-row">
+  <button id="btn-shuffle">Shuffle</button>
+  <button id="btn-reset">Reset</button>
+</div>
+
+<div id="face-btns"></div>
+<div id="status"></div>
+<input type="file" id="file-in" accept="image/*" style="display:none;">
+
+<script>
+(function () {
+  // ─── Constants ───────────────────────────────────────────────────────────
+  const S = 160;
+  const FACE = { F:0, B:1, L:2, R:3, U:4, D:5 };
+  const FACE_NAMES = ['Front','Back','Left','Right','Top','Bottom'];
+  const FACE_COLORS = ['#e63946','#2a9d8f','#e9c46a','#f4a261','#457b9d','#9b5de5'];
+
+  // CSS transforms to position each face of the cube
+  const FACE_TRANSFORMS = [
+    `translateZ(${S/2}px)`,
+    `rotateY(180deg) translateZ(${S/2}px)`,
+    `rotateY(-90deg) translateZ(${S/2}px)`,
+    `rotateY(90deg) translateZ(${S/2}px)`,
+    `rotateX(90deg) translateZ(${S/2}px)`,
+    `rotateX(-90deg) translateZ(${S/2}px)`,
+  ];
+
+  // ─── State ────────────────────────────────────────────────────────────────
+  function solvedState() {
+    return FACE_COLORS.map(c => Array.from({length:3}, () => Array(3).fill(c)));
+  }
+  let state = solvedState();
+  // Per-face image data URLs (null = solid color)
+  const faceImages = new Array(6).fill(null);
+
+  // ─── Build DOM ────────────────────────────────────────────────────────────
+  const cubeEl  = document.getElementById('cube');
+  const scene   = document.getElementById('scene');
+  const status  = document.getElementById('status');
+  const fileIn  = document.getElementById('file-in');
+  const faceBtn = document.getElementById('face-btns');
+
+  const faceEls = [], cellEls = [];
+
+  for (let f = 0; f < 6; f++) {
+    const face = document.createElement('div');
+    face.className = 'face';
+    face.style.transform = FACE_TRANSFORMS[f];
+    face.dataset.face = f;
+
+    const cells = [];
+    for (let i = 0; i < 9; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      face.appendChild(cell);
+      cells.push(cell);
+    }
+    cubeEl.appendChild(face);
+    faceEls.push(face);
+    cellEls.push(cells);
+
+    // Upload button per face
+    const btn = document.createElement('button');
+    btn.className = 'face-btn';
+    btn.textContent = FACE_NAMES[f];
+    btn.style.borderColor = FACE_COLORS[f] + '88';
+    btn.style.background  = FACE_COLORS[f] + '22';
+    btn.addEventListener('click', () => { selectedFace = f; fileIn.value=''; fileIn.click(); });
+    faceBtn.appendChild(btn);
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+  function render() {
+    for (let f = 0; f < 6; f++) {
+      const img = faceImages[f];
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          const cell = cellEls[f][r*3+c];
+          const color = state[f][r][c];
+          if (img) {
+            // Show a 3×3 slice of the uploaded image
+            cell.style.background = color;
+            cell.style.backgroundImage = `url(${img})`;
+            cell.style.backgroundSize = '300% 300%';
+            cell.style.backgroundPosition = `${c*50}% ${r*50}%`;
+          } else {
+            cell.style.background = color;
+            cell.style.backgroundImage = 'none';
+          }
+        }
+      }
+    }
+  }
+  render();
+
+  // ─── Rotation helpers ─────────────────────────────────────────────────────
+  function rotateFaceCW(f) {
+    const s = state[f];
+    state[f] = [
+      [s[2][0], s[1][0], s[0][0]],
+      [s[2][1], s[1][1], s[0][1]],
+      [s[2][2], s[1][2], s[0][2]],
+    ];
+  }
+  function rotateFaceCCW(f) { rotateFaceCW(f); rotateFaceCW(f); rotateFaceCW(f); }
+
+  // Cycle 4 groups of 3 stickers. Each group: [[f,r,c], [f,r,c], [f,r,c]]
+  function cycleEdges(groups, reverse) {
+    const saved = groups[0].map(([f,r,c]) => state[f][r][c]);
+    const order = reverse ? [1,2,3,0] : [3,2,1,0];
+    for (let i = 0; i < 3; i++) {
+      const [f0,r0,c0] = groups[0][i];
+      const src = groups[order[0]][i];
+      state[f0][r0][c0] = state[src[0]][src[1]][src[2]];
+    }
+    // full 4-way cycle
+    for (let pass = 1; pass < 3; pass++) {
+      const dest = groups[pass];
+      const src  = groups[order[pass]];
+      for (let i = 0; i < 3; i++)
+        state[dest[i][0]][dest[i][1]][dest[i][2]] = state[src[i][0]][src[i][1]][src[i][2]];
+    }
+    const last = groups[3];
+    for (let i = 0; i < 3; i++)
+      state[last[i][0]][last[i][1]][last[i][2]] = saved[i];
+  }
+
+  // ─── The 6 layer moves ────────────────────────────────────────────────────
+  function applyMove(name, rev) {
+    switch(name) {
+      case 'U':
+        rev ? rotateFaceCCW(FACE.U) : rotateFaceCW(FACE.U);
+        cycleEdges([
+          [[FACE.F,0,0],[FACE.F,0,1],[FACE.F,0,2]],
+          [[FACE.R,0,0],[FACE.R,0,1],[FACE.R,0,2]],
+          [[FACE.B,0,0],[FACE.B,0,1],[FACE.B,0,2]],
+          [[FACE.L,0,0],[FACE.L,0,1],[FACE.L,0,2]],
+        ], rev); break;
+
+      case 'D':
+        rev ? rotateFaceCCW(FACE.D) : rotateFaceCW(FACE.D);
+        cycleEdges([
+          [[FACE.F,2,0],[FACE.F,2,1],[FACE.F,2,2]],
+          [[FACE.L,2,0],[FACE.L,2,1],[FACE.L,2,2]],
+          [[FACE.B,2,0],[FACE.B,2,1],[FACE.B,2,2]],
+          [[FACE.R,2,0],[FACE.R,2,1],[FACE.R,2,2]],
+        ], rev); break;
+
+      case 'M': // middle horizontal (between U and D)
+        cycleEdges([
+          [[FACE.F,1,0],[FACE.F,1,1],[FACE.F,1,2]],
+          [[FACE.R,1,0],[FACE.R,1,1],[FACE.R,1,2]],
+          [[FACE.B,1,0],[FACE.B,1,1],[FACE.B,1,2]],
+          [[FACE.L,1,0],[FACE.L,1,1],[FACE.L,1,2]],
+        ], rev); break;
+
+      case 'R':
+        rev ? rotateFaceCCW(FACE.R) : rotateFaceCW(FACE.R);
+        cycleEdges([
+          [[FACE.F,0,2],[FACE.F,1,2],[FACE.F,2,2]],
+          [[FACE.U,0,2],[FACE.U,1,2],[FACE.U,2,2]],
+          [[FACE.B,2,0],[FACE.B,1,0],[FACE.B,0,0]],
+          [[FACE.D,0,2],[FACE.D,1,2],[FACE.D,2,2]],
+        ], rev); break;
+
+      case 'L':
+        rev ? rotateFaceCCW(FACE.L) : rotateFaceCW(FACE.L);
+        cycleEdges([
+          [[FACE.F,0,0],[FACE.F,1,0],[FACE.F,2,0]],
+          [[FACE.D,0,0],[FACE.D,1,0],[FACE.D,2,0]],
+          [[FACE.B,2,2],[FACE.B,1,2],[FACE.B,0,2]],
+          [[FACE.U,0,0],[FACE.U,1,0],[FACE.U,2,0]],
+        ], rev); break;
+
+      case 'S': // middle vertical (between L and R)
+        cycleEdges([
+          [[FACE.F,0,1],[FACE.F,1,1],[FACE.F,2,1]],
+          [[FACE.D,0,1],[FACE.D,1,1],[FACE.D,2,1]],
+          [[FACE.B,2,1],[FACE.B,1,1],[FACE.B,0,1]],
+          [[FACE.U,0,1],[FACE.U,1,1],[FACE.U,2,1]],
+        ], rev); break;
+    }
+  }
+
+  // ─── Animated move ────────────────────────────────────────────────────────
+  // We animate by temporarily extracting the 3 affected face-strips into
+  // a cloned overlay div that we rotate, then snap the real state.
+  let animating = false;
+
+  function animateMove(moveName, rev, onDone) {
+    // Axis and angle for each move name
+    const ANIM = {
+      U: { axis:'Y', layer:'row', idx:0, sign: 1 },
+      M: { axis:'Y', layer:'row', idx:1, sign: 1 },
+      D: { axis:'Y', layer:'row', idx:2, sign:-1 },
+      R: { axis:'X', layer:'col', idx:2, sign:-1 },
+      S: { axis:'X', layer:'col', idx:1, sign:-1 },
+      L: { axis:'X', layer:'col', idx:0, sign: 1 },
+    };
+    const info = ANIM[moveName];
+    if (!info) { applyMove(moveName, rev); render(); onDone && onDone(); return; }
+
+    const angle = (rev ? -1 : 1) * info.sign * 90;
+    const DURATION = 180; // ms
+
+    // Build a flat snapshot of current cell colors for the overlay
+    // The overlay sits at the cube level and we rotate it
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:absolute; width:${S}px; height:${S}px;
+      left:80px; top:80px;
+      transform-style:preserve-3d;
+      pointer-events:none;
+    `;
+
+    // For each face, determine which cells belong to this layer
+    // and create ghost cells in the overlay positioned at the face's transform
+    for (let f = 0; f < 6; f++) {
+      const strip = document.createElement('div');
+      strip.style.cssText = `
+        position:absolute; width:${S}px; height:${S}px;
+        transform:${FACE_TRANSFORMS[f]};
+        display:grid;
+        grid-template-columns:repeat(3,1fr);
+        gap:4px; padding:4px;
+        pointer-events:none;
+      `;
+      // Fill with transparent placeholders; only color the relevant strip
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          const cell = document.createElement('div');
+          cell.style.cssText = 'border-radius:3px;';
+          const inLayer = (info.layer==='row' && r===info.idx) ||
+                          (info.layer==='col' && c===info.idx);
+          if (inLayer) {
+            cell.style.background = state[f][r][c];
+            if (faceImages[f]) {
+              cell.style.backgroundImage = `url(${faceImages[f]})`;
+              cell.style.backgroundSize = '300% 300%';
+              cell.style.backgroundPosition = `${c*50}% ${r*50}%`;
+            }
+          } else {
+            cell.style.background = 'transparent';
+          }
+          strip.appendChild(cell);
+        }
+      }
+      overlay.appendChild(strip);
+    }
+
+    // Hide the real cells in the moving layer while animating
+    for (let f = 0; f < 6; f++) {
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          const inLayer = (info.layer==='row' && r===info.idx) ||
+                          (info.layer==='col' && c===info.idx);
+          if (inLayer) cellEls[f][r*3+c].style.opacity = '0';
+        }
+      }
+    }
+
+    cubeEl.appendChild(overlay);
+
+    // Animate the overlay rotating
+    const startTime = performance.now();
+    const startAngle = 0;
+
+    function tick(now) {
+      const t = Math.min(1, (now - startTime) / DURATION);
+      const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t; // ease in-out quad
+      const cur = startAngle + angle * ease;
+      overlay.style.transform = info.axis==='Y'
+        ? `rotateY(${cur}deg)`
+        : `rotateX(${cur}deg)`;
+
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        // Snap: apply the real move, restore opacity, remove overlay
+        cubeEl.removeChild(overlay);
+        applyMove(moveName, rev);
+        for (let f = 0; f < 6; f++)
+          for (let i = 0; i < 9; i++)
+            cellEls[f][i].style.opacity = '1';
+        render();
+        onDone && onDone();
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ─── Drag handling ────────────────────────────────────────────────────────
+  let cubeRotX = -30, cubeRotY = 30;
+  function setCubeTransform() {
+    cubeEl.style.transform = `rotateX(${cubeRotX}deg) rotateY(${cubeRotY}deg)`;
+  }
+
+  function visibleFace() {
+    const ry = ((cubeRotY % 360) + 360) % 360;
+    if (cubeRotX < -45) return FACE.U;
+    if (cubeRotX >  45) return FACE.D;
+    if (ry >= 315 || ry < 45)  return FACE.F;
+    if (ry >= 45  && ry < 135) return FACE.R;
+    if (ry >= 135 && ry < 225) return FACE.B;
+    return FACE.L;
+  }
+
+  function layerMoveFromDrag(face, axis, layer, dir) {
+    // axis: 'h' = horizontal drag, 'v' = vertical drag
+    // layer: 0/1/2, dir: +1 or -1
+    if (axis === 'h') {
+      const name  = layer===0?'U': layer===1?'M':'D';
+      const rev   = layer===2 ? dir>0 : dir<0;
+      return { name, rev };
+    } else {
+      // vertical — depends on which face is front
+      if (face===FACE.F || face===FACE.U || face===FACE.D) {
+        const name = layer===0?'L': layer===1?'S':'R';
+        const rev  = layer===2 ? dir<0 : dir>0;
+        return { name, rev };
+      } else if (face===FACE.B) {
+        const name = layer===0?'R': layer===1?'S':'L';
+        const rev  = layer===2 ? dir>0 : dir<0;
+        return { name, rev };
+      } else if (face===FACE.R) {
+        const name = layer===0?'U': layer===1?'M':'D';
+        const rev  = dir<0;
+        return { name, rev };
+      } else {
+        const name = layer===0?'D': layer===1?'M':'U';
+        const rev  = dir>0;
+        return { name, rev };
+      }
+    }
+  }
+
+  let drag = null;
+
+  scene.addEventListener('pointerdown', e => {
+    if (animating) return;
+    scene.setPointerCapture(e.pointerId);
+    drag = { sx: e.clientX, sy: e.clientY, moved: false, decided: false };
+    scene.style.cursor = 'grabbing';
+  });
+
+  scene.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.sx;
+    const dy = e.clientY - drag.sy;
+    if (Math.sqrt(dx*dx+dy*dy) < 5) return;
+    drag.moved = true;
+
+    if (!drag.decided) {
+      drag.decided = true;
+      const rect = scene.getBoundingClientRect();
+      const px = drag.sx - rect.left;
+      const py = drag.sy - rect.top;
+      // Cube face occupies roughly 80..240 within 320px scene
+      drag.onFace = px>=72 && px<=248 && py>=72 && py<=248;
+      if (drag.onFace) {
+        const fx = (px - 80) / S * 3;
+        const fy = (py - 80) / S * 3;
+        drag.col  = Math.min(2, Math.max(0, Math.floor(fx)));
+        drag.row  = Math.min(2, Math.max(0, Math.floor(fy)));
+        drag.axis = Math.abs(dx) >= Math.abs(dy) ? 'h' : 'v';
+        drag.face = visibleFace();
+      }
+    }
+
+    if (!drag.onFace) {
+      cubeRotY += dx * 0.012;
+      cubeRotX = Math.max(-80, Math.min(80, cubeRotX + dy * 0.012));
+      drag.sx = e.clientX; drag.sy = e.clientY;
+      setCubeTransform();
+    }
+  });
+
+  scene.addEventListener('pointerup', e => {
+    if (!drag) return;
+    if (drag.moved && drag.decided && drag.onFace && !animating) {
+      const dx = e.clientX - drag.sx;
+      const dy = e.clientY - drag.sy;
+      const dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist > 10) {
+        const dir  = drag.axis==='h' ? (dx>0?1:-1) : (dy>0?1:-1);
+        const layer = drag.axis==='h' ? drag.row : drag.col;
+        const { name, rev } = layerMoveFromDrag(drag.face, drag.axis, layer, dir);
+        animating = true;
+        status.textContent = `${name}${rev?'\'':''}`;
+        animateMove(name, rev, () => {
+          animating = false;
+          status.textContent = '';
+        });
+      }
+    }
+    drag = null;
+    scene.style.cursor = 'grab';
+  });
+
+  // Auto-rotate when idle
+  let autoTimer = null;
+  function startAuto() {
+    stopAuto();
+    autoTimer = setInterval(() => {
+      if (!drag && !animating) {
+        cubeRotY += 0.3;
+        setCubeTransform();
+      }
+    }, 16);
+  }
+  function stopAuto() { clearInterval(autoTimer); }
+
+  scene.addEventListener('pointerdown', stopAuto);
+  scene.addEventListener('pointerup',   () => setTimeout(startAuto, 2000));
+  startAuto();
+
+  // ─── Shuffle / Reset ─────────────────────────────────────────────────────
+  const MOVES = ['U','D','L','R','M','S'];
+  function doShuffle(moves, i) {
+    if (i >= moves.length) { animating = false; status.textContent=''; return; }
+    animating = true;
+    const { name, rev } = moves[i];
+    status.textContent = `${name}${rev?'\'':''}`;
+    animateMove(name, rev, () => doShuffle(moves, i+1));
+  }
+
+  document.getElementById('btn-shuffle').addEventListener('click', () => {
+    if (animating) return;
+    const seq = Array.from({length:12}, () => ({
+      name: MOVES[Math.floor(Math.random()*MOVES.length)],
+      rev:  Math.random() > 0.5
+    }));
+    doShuffle(seq, 0);
+  });
+
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    if (animating) return;
+    state = solvedState();
+    faceImages.fill(null);
+    render();
+  });
+
+  // ─── Photo upload ─────────────────────────────────────────────────────────
+  let selectedFace = -1;
+  fileIn.addEventListener('change', () => {
+    const file = fileIn.files[0];
+    if (!file || selectedFace < 0) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      faceImages[selectedFace] = e.target.result;
+      // Paint the sticker colors from the dominant region of the image
+      // (optional: for now just keep current colors and overlay image)
+      render();
+    };
+    reader.readAsDataURL(file);
+  });
+
+})();
+</script>
+</body>
+</html>
